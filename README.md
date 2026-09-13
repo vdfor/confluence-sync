@@ -2,6 +2,8 @@
 
 Confluence 文档同步 CLI 工具，支持将本地 Markdown 文件上传至 Confluence 并自动转换为 Confluence 页面格式。支持 Mermaid 图表自动渲染为图片。
 
+[![npm (scoped)](https://img.shields.io/npm/v/%40vdfor%2Fconfluence-sync)](https://www.npmjs.com/package/@vdfor/confluence-sync)
+
 ## 安装
 
 ```bash
