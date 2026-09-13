@@ -4,6 +4,7 @@
  *
  * 环境变量（或通过 CLI 参数配置）：
  *   必填：             CONFLUENCE_BASE_URL   - Confluence 服务地址
+ *                      CONFLUENCE_SPACE_KEY  - Space Key
  * 认证方式（二选一）：
  *   方式1 PAT：        CONFLUENCE_PAT       - Personal Access Token
  * 方式2 Basic Auth： CONFLUENCE_USERNAME   - Confluence 登录名（工号）
@@ -15,10 +16,11 @@
  *   confluence-sync upload-file --page-id <ID> --file <path> [--name <文件名>]
  *   confluence-sync list-pages [--space <key>]
  *   confluence-sync list-files --page-id <ID>
- *   confluence-sync get-content --page-id <ID>
+ *   confluence-sync get-content --page-id <ID> [--markdown]
  *
  * 可选配置参数（优先于环境变量）：
  *   --base-url        Confluence 服务地址
+ *   --space-key       Space Key
  *   --pat             Personal Access Token
  *   --username        Confluence 登录名
  *   --api-token       API Token 或密码
@@ -31,8 +33,9 @@ import {
   listPages,
   listAttachments,
   getPageContent,
-  defaultSpaceKey,
+  confluenceToMd,
   getBaseUrl,
+  getSpaceKey,
   configure,
 } from './src/confluence.mjs';
 
@@ -101,9 +104,11 @@ list-files 选项:
 
 get-content 选项:
   --page-id     页面 ID（必填）
+  --markdown    输出为 Markdown 格式（默认输出 Storage HTML）
 
 配置参数（优先于环境变量）:
   --base-url        Confluence 服务地址
+  --space-key       Space Key
   --pat             Personal Access Token
   --username        Confluence 登录名
   --api-token       API Token 或密码
@@ -111,6 +116,7 @@ get-content 选项:
 环境变量:
   必填:
     CONFLUENCE_BASE_URL   Confluence 服务地址
+    CONFLUENCE_SPACE_KEY  Space Key
 
   认证方式（二选一）:
     方式1 - Personal Access Token:
@@ -137,11 +143,13 @@ async function main() {
   // 用 CLI 参数覆盖环境变量配置
   configure({
     baseUrl: args['base-url'],
+    spaceKey: args['space-key'],
     pat: args['pat'],
     username: args['username'],
     apiToken: args['api-token'],
   });
   const baseUrl = getBaseUrl();
+  const spaceKey = getSpaceKey();
 
   try {
     switch (command) {
@@ -153,7 +161,7 @@ async function main() {
         const result = await uploadMarkdown({
           filePath: args.file,
           title: args.title,
-          spaceKey: args.space || defaultSpaceKey,
+          spaceKey: args.space || spaceKey,
           parentId: args.parent,
           dryRun: args['dry-run'] === true,
         });
@@ -180,7 +188,7 @@ async function main() {
           pageId: args['page-id'],
           title: args.title,
           filePath: args.file,
-          spaceKey: args.space || defaultSpaceKey,
+          spaceKey: args.space || spaceKey,
           minorEdit: args['minor-edit'] === true,
         });
         console.log('\n页面信息：');
@@ -208,7 +216,7 @@ async function main() {
       }
 
       case 'list-pages': {
-        const space = args.space || defaultSpaceKey;
+        const space = args.space || spaceKey;
         console.log(`Space: ${space}\n`);
         const pages = await listPages(space);
         if (!pages.length) {
@@ -252,8 +260,13 @@ async function main() {
         console.log(`标题:    ${page.title}`);
         console.log(`Space:   ${page.space?.key}`);
         console.log(`版本:    ${page.version?.number}`);
-        console.log(`\n── Storage HTML ──────────────────────────────\n`);
-        console.log(page.body.storage.value);
+        if (args.markdown) {
+          console.log(`\n── Markdown ──────────────────────────────\n`);
+          console.log(confluenceToMd(page.body.storage.value));
+        } else {
+          console.log(`\n── Storage HTML ──────────────────────────────\n`);
+          console.log(page.body.storage.value);
+        }
         break;
       }
 

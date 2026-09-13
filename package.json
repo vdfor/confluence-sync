@@ -1,6 +1,6 @@
 {
   "name": "@vdfor/confluence-sync",
-  "version": "0.0.1",
+  "version": "0.3.0",
   "author": "vdfor",
   "license": "MIT",
   "private": false,
@@ -20,15 +20,16 @@
   },
   "files": [
     "upload.mjs",
-    "src/"
+    "src/",
+    "skills/"
   ],
   "scripts": {
     "upload": "node upload.mjs upload",
     "update": "node upload.mjs update",
     "help": "node upload.mjs help",
-    "release:beta": "read -p '请输入版本号 (例如: patch, minor, major 或具体版本号): ' v && pnpm version $v && pnpm publish --registry https://registry.npmjs.org/ --access public --tag beta --no-git-checks",
-    "release": "read -p '请输入版本号 (例如: patch, minor, major 或具体版本号): ' v && pnpm version $v && pnpm publish --registry https://registry.npmjs.org/ --access public --no-git-checks",
-    "v": "read -p '请输入版本号 (例如: patch, minor, major 或具体版本号): ' v && pnpm version $v",
+    "release:beta": "read -p '请输入版本号 (例如: patch, minor, major 或具体版本号): ' v && NPM_CONFIG_GIT_CHECKS=false pnpm version $v --no-git-tag-version --no-git-checks && pnpm publish --tag beta --access public --no-git-checks",
+    "release": "read -p '请输入版本号 (例如: patch, minor, major 或具体版本号): ' v && NPM_CONFIG_GIT_CHECKS=false pnpm version $v --no-git-tag-version --no-git-checks && pnpm publish --access public --no-git-checks",
+    "v": "read -p '请输入版本号 (例如: patch, minor, major 或具体版本号): ' v && pnpm version $v --no-git-tag-version --no-git-checks",
     "clean": "rimraf dist node_modules"
   },
   "engines": {

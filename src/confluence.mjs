@@ -1,13 +1,10 @@
 import axios from 'axios';
 import { marked } from 'marked';
-import { readFileSync } from 'node:fs';
 import { extname } from 'node:path';
 
 // ── 配置 ──────────────────────────────────────────────────────────────────────
-const config = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf-8'));
-const { spaceKey: defaultSpaceKey } = config;
-
 let baseUrl = process.env.CONFLUENCE_BASE_URL;
+let spaceKey = process.env.CONFLUENCE_SPACE_KEY;
 let pat = process.env.CONFLUENCE_PAT;
 let username = process.env.CONFLUENCE_USERNAME;
 let apiToken = process.env.CONFLUENCE_API_TOKEN;
@@ -17,12 +14,14 @@ let api;
  * 用 CLI 参数覆盖环境变量配置，需在其他函数调用前执行
  * @param {object} [opts]
  * @param {string} [opts.baseUrl]
+ * @param {string} [opts.spaceKey]
  * @param {string} [opts.pat]
  * @param {string} [opts.username]
  * @param {string} [opts.apiToken]
  */
 export function configure(opts = {}) {
   if (opts.baseUrl) baseUrl = opts.baseUrl;
+  if (opts.spaceKey) spaceKey = opts.spaceKey;
   if (opts.pat) pat = opts.pat;
   if (opts.username) username = opts.username;
   if (opts.apiToken) apiToken = opts.apiToken;
@@ -271,6 +270,104 @@ export function mdToConfluence(md) {
   return renderTokens(tokens);
 }
 
+// ── Confluence Storage Format → Markdown ─────────────────────────────────────
+
+/**
+ * 将 Confluence storage format（XHTML）转换为 Markdown
+ * @param {string} html - Confluence storage format HTML
+ * @returns {string} Markdown 文本
+ */
+export function confluenceToMd(html) {
+  if (!html) return '';
+
+  let md = html;
+
+  // 代码块：<ac:structured-macro ac:name="code">
+  md = md.replace(/<ac:structured-macro\s+ac:name="code">[\s\S]*?<ac:parameter\s+ac:name="language">([\s\S]*?)<\/ac:parameter>[\s\S]*?<ac:plain-text-body><!\[CDATA\[([\s\S]*?)\]\]><\/ac:plain-text-body>[\s\S]*?<\/ac:structured-macro>/g,
+    (_, lang, code) => `\n\`\`\`${lang}\n${code}\n\`\`\`\n`);
+
+  // 标题
+  md = md.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, '\n# $1\n');
+  md = md.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, '\n## $1\n');
+  md = md.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, '\n### $1\n');
+  md = md.replace(/<h4[^>]*>([\s\S]*?)<\/h4>/gi, '\n#### $1\n');
+  md = md.replace(/<h5[^>]*>([\s\S]*?)<\/h5>/gi, '\n##### $1\n');
+  md = md.replace(/<h6[^>]*>([\s\S]*?)<\/h6>/gi, '\n###### $1\n');
+
+  // 粗体、斜体、删除线、行内代码
+  md = md.replace(/<strong>([\s\S]*?)<\/strong>/gi, '**$1**');
+  md = md.replace(/<b>([\s\S]*?)<\/b>/gi, '**$1**');
+  md = md.replace(/<em>([\s\S]*?)<\/em>/gi, '*$1*');
+  md = md.replace(/<i>([\s\S]*?)<\/i>/gi, '*$1*');
+  md = md.replace(/<s>([\s\S]*?)<\/s>/gi, '~~$1~~');
+  md = md.replace(/<del>([\s\S]*?)<\/del>/gi, '~~$1~~');
+  md = md.replace(/<code>([\s\S]*?)<\/code>/gi, '`$1`');
+
+  // 链接
+  md = md.replace(/<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)');
+
+  // 图片：<ac:image><ri:attachment ri:filename="xxx" /></ac:image>
+  md = md.replace(/<ac:image>[\s\S]*?<ri:attachment\s+ri:filename="([^"]*)"[\s\S]*?\/>[\s\S]*?<\/ac:image>/gi, '![]($1)');
+
+  // 普通图片
+  md = md.replace(/<img\s+[^>]*src="([^"]*)"[^>]*\/?>/gi, '![]($1)');
+
+  // 水平线
+  md = md.replace(/<hr\s*\/?>/gi, '\n---\n');
+
+  // 换行
+  md = md.replace(/<br\s*\/?>/gi, '\n');
+
+  // 段落
+  md = md.replace(/<p>([\s\S]*?)<\/p>/gi, '\n$1\n');
+
+  // 引用块
+  md = md.replace(/<blockquote>([\s\S]*?)<\/blockquote>/gi, (_, content) => {
+    return content.split('\n').map(line => `> ${line}`).join('\n');
+  });
+
+  // 无序列表
+  md = md.replace(/<ul>([\s\S]*?)<\/ul>/gi, (_, content) => {
+    return content.replace(/<li>([\s\S]*?)<\/li>/gi, '- $1\n');
+  });
+
+  // 有序列表
+  md = md.replace(/<ol>([\s\S]*?)<\/ol>/gi, (_, content) => {
+    let i = 0;
+    return content.replace(/<li>([\s\S]*?)<\/li>/gi, () => `${++i}. $1\n`);
+  });
+
+  // 表格
+  md = md.replace(/<table>([\s\S]*?)<\/table>/gi, (_, tableContent) => {
+    let rows = [];
+    // 表头
+    const headerMatch = tableContent.match(/<thead>([\s\S]*?)<\/thead>/i);
+    if (headerMatch) {
+      const cells = headerMatch[1].match(/<th[^>]*>([\s\S]*?)<\/th>/gi) || [];
+      rows.push(cells.map(c => c.replace(/<th[^>]*>([\s\S]*?)<\/th>/i, '$1').trim()));
+      rows.push(rows[0].map(() => '---'));
+    }
+    // 表体
+    const bodyMatch = tableContent.match(/<tbody>([\s\S]*?)<\/tbody>/i);
+    if (bodyMatch) {
+      const trMatches = bodyMatch[1].match(/<tr>([\s\S]*?)<\/tr>/gi) || [];
+      for (const tr of trMatches) {
+        const cells = tr.match(/<td[^>]*>([\s\S]*?)<\/td>/gi) || [];
+        rows.push(cells.map(c => c.replace(/<td[^>]*>([\s\S]*?)<\/td>/i, '$1').trim()));
+      }
+    }
+    return '\n' + rows.map(r => '| ' + r.join(' | ') + ' |').join('\n') + '\n';
+  });
+
+  // 移除剩余 HTML 标签
+  md = md.replace(/<[^>]+>/g, '');
+
+  // 清理多余空行
+  md = md.replace(/\n{3,}/g, '\n\n');
+
+  return md.trim();
+}
+
 // ── 文件上传（附件）────────────────────────────────────────────────────────────
 
 /**
@@ -381,7 +478,8 @@ async function resolveParentId(parentIdentifier, spaceKey) {
  * @param {boolean} [opts.dryRun] - 仅打印转换结果
  */
 export async function uploadMarkdown(opts) {
-  const { filePath, title: optTitle, spaceKey = defaultSpaceKey, parentId: parentRaw, dryRun = false } = opts;
+  const { filePath, title: optTitle, spaceKey: spaceKeyOpt, parentId: parentRaw, dryRun = false } = opts;
+  const effectiveSpaceKey = spaceKeyOpt || spaceKey;
   const fs = await import('node:fs');
   const path = await import('node:path');
 
@@ -392,16 +490,16 @@ export async function uploadMarkdown(opts) {
   if (dryRun) {
     console.log('── 转换结果（dry-run）────────────────────────');
     console.log(`  标题: ${title}`);
-    console.log(`  Space: ${spaceKey}`);
+    console.log(`  Space: ${effectiveSpaceKey}`);
     console.log('  Body:\n' + bodyHtml);
     return null;
   }
 
   // 查找父页面
-  const parentId = await resolveParentId(parentRaw, spaceKey);
+  const parentId = await resolveParentId(parentRaw, effectiveSpaceKey);
 
   // 检查是否已存在同名页面
-  const existing = await getPageByTitle(spaceKey, title);
+  const existing = await getPageByTitle(effectiveSpaceKey, title);
   if (existing) {
     console.log(`  页面「${title}」已存在 (ID: ${existing.id})，将更新…`);
     const updated = await updatePage(existing.id, title, bodyHtml, existing.version.number);
@@ -409,7 +507,7 @@ export async function uploadMarkdown(opts) {
     return updated;
   }
 
-  const page = await createPage(spaceKey, title, bodyHtml, parentId);
+  const page = await createPage(effectiveSpaceKey, title, bodyHtml, parentId);
   console.log(`  ✅ 创建完成 → ${baseUrl}/pages/viewpage.action?pageId=${page.id}`);
   return page;
 }
@@ -418,7 +516,8 @@ export async function uploadMarkdown(opts) {
  * 更新指定页面（通过 ID 或 space+title 查找）
  */
 export async function updateMarkdown(opts) {
-  const { pageId, title: searchTitle, filePath, spaceKey = defaultSpaceKey, minorEdit = false } = opts;
+  const { pageId, title: searchTitle, filePath, spaceKey: spaceKeyOpt, minorEdit = false } = opts;
+  const effectiveSpaceKey = spaceKeyOpt || spaceKey;
   const fs = await import('node:fs');
 
   const md = fs.readFileSync(filePath, 'utf-8');
@@ -428,8 +527,8 @@ export async function updateMarkdown(opts) {
   if (pageId) {
     page = await getPageById(pageId);
   } else if (searchTitle) {
-    page = await getPageByTitle(spaceKey, searchTitle);
-    if (!page) throw new Error(`未找到页面「${searchTitle}」（space: ${spaceKey}）`);
+    page = await getPageByTitle(effectiveSpaceKey, searchTitle);
+    if (!page) throw new Error(`未找到页面「${searchTitle}」（space: ${effectiveSpaceKey}）`);
   } else {
     throw new Error('必须指定 --page-id 或 --title 来定位目标页面');
   }
@@ -441,5 +540,5 @@ export async function updateMarkdown(opts) {
 }
 
 // ── 导出配置 ──────────────────────────────────────────────────────────────────
-export { defaultSpaceKey };
 export function getBaseUrl() { return baseUrl; }
+export function getSpaceKey() { return spaceKey; }
