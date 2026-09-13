@@ -84,7 +84,7 @@ confluence-sync get-content --page-id <ID> [--markdown]
 
 ## Mermaid 图表支持
 
-Markdown 中的 ```` ```mermaid ```` 代码块会自动通过 [sebastianjs](https://github.com/creadri/sebastianjs) 渲染为 PNG 图片（本地离线渲染，无需外网、无需浏览器），上传后页面中显示为图片附件。
+Markdown 中的 `mermaid` 代码块会自动通过 [sebastianjs](https://github.com/creadri/sebastianjs) 渲染为 PNG 图片（本地离线渲染，无需外网、无需浏览器），上传后页面中显示为图片附件。
 
 - 默认自动检测并转换，无 Mermaid 块时不影响正常流程
 - Mermaid 渲染失败时保留原始代码块（降级处理，不阻塞上传）
@@ -139,23 +139,7 @@ confluence-sync get-content --page-id 123456 --markdown
 
 ## Skill 集成
 
-本项目包含 Trae Skill，安装后可被智能体调用。
-
-### 安装
-
-```bash
-pnpm add -g @vdfor/confluence-sync
-```
-
-### 使用
-
-安装后，智能体可直接调用 `confluence-sync` 命令：
-
-```bash
-confluence-sync upload --file README.md --title "项目文档" --parent 27263539
-confluence-sync update --file README.md --page-id 123456
-confluence-sync get-content --page-id 123456 --markdown
-```
+本项目包含 [Skill 定义](skills/confluence-sync.md)，全局安装后可被智能体直接调用 `confluence-sync` 命令。
 
 ## License
 
