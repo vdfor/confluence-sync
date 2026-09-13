@@ -1,10 +1,117 @@
 import axios from 'axios';
 import { marked } from 'marked';
-import { extname } from 'node:path';
+import { nanoid } from 'nanoid';
+import { extname, dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { writeFile, unlink } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
+// ── Mermaid 处理 ─────────────────────────────────────────────────────────────
+
+let sebastianRenderer = null;
+let cjkFontRegistry = null;
+
+/** 项目内置 CJK 字体（思源黑体可变） */
+const PROJECT_FONT_DIR = join(dirname(fileURLToPath(import.meta.url)), 'fonts');
+const CJK_FONT_FILE = join(PROJECT_FONT_DIR, 'SourceHanSansSC-VF.ttf');
+
+async function getSebastianRenderer() {
+  if (!sebastianRenderer) {
+    const sebastian = await import('sebastianjs');
+    sebastianRenderer = { renderPng: sebastian.renderPng, dispose: sebastian.dispose };
+  }
+  return sebastianRenderer;
+}
+
+/**
+ * 创建注册了项目内置 CJK 字体的 FontRegistry
+ * mermaid 节点标题默认用 bold，所以需要同时覆盖 regular + bold + italic
+ */
+async function getCjkFontRegistry() {
+  if (cjkFontRegistry) return cjkFontRegistry;
+
+  const { FontRegistry } = await import('sebastianjs/src/geometry/fonts.js');
+  const registry = new FontRegistry();
+
+  // 注册思源黑体 SC 可变字体，覆盖所有字重（variable font 可以自己插值不同 weight）
+  // 家族名用常见别名，CSS font-family 匹配时能命中
+  registry.registerFont(CJK_FONT_FILE, { family: 'Source Han Sans SC', weight: 400 });
+  registry.registerFont(CJK_FONT_FILE, { family: 'Source Han Sans SC', weight: 700 });
+  registry.registerFont(CJK_FONT_FILE, { family: 'Source Han Sans SC', weight: 400, italic: true });
+  registry.registerFont(CJK_FONT_FILE, { family: 'Source Han Sans SC', weight: 700, italic: true });
+
+  // 也注册成 generic 别名（mermaid 默认字体栈里有 sans-serif）
+  registry.registerFont(CJK_FONT_FILE, { family: 'sans-serif', weight: 400 });
+  registry.registerFont(CJK_FONT_FILE, { family: 'sans-serif', weight: 700 });
+
+  registry.setDefaultFamily('Source Han Sans SC');
+  cjkFontRegistry = registry;
+  return registry;
+}
+
+/**
+ * 检测并替换 markdown 中的 ```mermaid 代码块为图片占位符
+ * 使用 sebastianjs（本地、零浏览器、零外网依赖）渲染为 PNG
+ *
+ * @param {string} md - 原始 markdown
+ * @returns {{ md: string, images: { file: string, name: string }[], hasMermaid: boolean }}
+ */
+export async function preprocessMermaid(md) {
+  const mermaidRe = /```mermaid\s*\n([\s\S]*?)```/gi;
+  const matches = [...md.matchAll(mermaidRe)];
+  if (!matches.length) return { md, images: [], hasMermaid: false };
+
+  const { renderPng } = await getSebastianRenderer();
+  const fontRegistry = await getCjkFontRegistry();
+  const images = [];
+  let result = md;
+  let offset = 0;
+
+  for (let i = 0; i < matches.length; i++) {
+    const block = matches[i];
+    const code = block[1];
+    const id = nanoid();
+    const name = `mermaid-${id}.png`;
+    const file = `${tmpdir()}/${name}`;
+
+    try {
+      const t0 = Date.now();
+      const { data: pngBuffer } = await renderPng(code, {
+        background: 'white',
+        fontFamily: 'Source Han Sans SC',
+        fontRegistry,
+        textAsPaths: true,  // resvg 对 CJK <text> 光栅化有问题，转成字形轮廓路径绕开
+        scale: 3,           // 3x 高分辨率让路径光栅化更平滑
+      });
+      const t1 = Date.now();
+      await writeFile(file, pngBuffer);
+      images.push({ file, name });
+
+      const replacement = `![${name}](${name})`;
+      const start = block.index + offset;
+      const end = start + block[0].length;
+      result = result.slice(0, start) + replacement + result.slice(end);
+      offset += replacement.length - block[0].length;
+      console.log(`  📐 Mermaid 图表 ${i + 1} 渲染完成 → ${name} (${pngBuffer.length}B, ${t1 - t0}ms)`);
+    } catch (err) {
+      console.warn(`  ⚠️  Mermaid 图表 ${i + 1} 渲染失败：${err.message}，保留原始代码块`);
+    }
+  }
+
+  return { md: result, images, hasMermaid: images.length > 0 };
+}
+
+/**
+ * 清理临时图片文件
+ */
+async function cleanupMermaidImages(images) {
+  for (const img of images) {
+    try { await unlink(img.file); } catch {}
+  }
+}
 
 // ── 配置 ──────────────────────────────────────────────────────────────────────
 let baseUrl = process.env.CONFLUENCE_BASE_URL;
-let spaceKey = process.env.CONFLUENCE_SPACE_KEY;
 let pat = process.env.CONFLUENCE_PAT;
 let username = process.env.CONFLUENCE_USERNAME;
 let apiToken = process.env.CONFLUENCE_API_TOKEN;
@@ -14,14 +121,12 @@ let api;
  * 用 CLI 参数覆盖环境变量配置，需在其他函数调用前执行
  * @param {object} [opts]
  * @param {string} [opts.baseUrl]
- * @param {string} [opts.spaceKey]
  * @param {string} [opts.pat]
  * @param {string} [opts.username]
  * @param {string} [opts.apiToken]
  */
 export function configure(opts = {}) {
   if (opts.baseUrl) baseUrl = opts.baseUrl;
-  if (opts.spaceKey) spaceKey = opts.spaceKey;
   if (opts.pat) pat = opts.pat;
   if (opts.username) username = opts.username;
   if (opts.apiToken) apiToken = opts.apiToken;
@@ -61,44 +166,23 @@ function logAxiosError(err) {
 // ── 页面查询 ──────────────────────────────────────────────────────────────────
 
 /**
- * 按 ID 获取页面元信息（含版本号）
+ * 按 ID 获取页面元信息（含版本号、space）
  */
 export async function getPageById(id) {
   ensureApi();
   const { data } = await api.get(`/content/${id}`, {
-    params: { expand: 'version,ancestors' },
+    params: { expand: 'version,ancestors,space' },
   });
   return data;
 }
 
 /**
- * 按 spaceKey + title 获取页面（仅返回第一个匹配）
+ * 列出指定 parent 下的子页面
  */
-export async function getPageByTitle(spaceKey, title) {
+export async function listChildPages(parentId, limit = 50) {
   ensureApi();
-  const { data } = await api.get('/content', {
-    params: {
-      spaceKey,
-      title,
-      expand: 'version',
-      limit: 1,
-    },
-  });
-  return data.results?.[0] || null;
-}
-
-/**
- * 列出 space 下所有页面（分页）
- */
-export async function listPages(spaceKey, limit = 25) {
-  ensureApi();
-  const { data } = await api.get('/content', {
-    params: {
-      spaceKey,
-      type: 'page',
-      expand: 'version',
-      limit,
-    },
+  const { data } = await api.get(`/content/${parentId}/child/page`, {
+    params: { limit, expand: 'version' },
   });
   return data.results;
 }
@@ -117,19 +201,16 @@ export async function getPageContent(id) {
 // ── 页面创建 / 更新 ───────────────────────────────────────────────────────────
 
 /**
- * 创建新页面
+ * 创建新页面（有 parentId 即可，Confluence 自动推断 space）
  */
-export async function createPage(spaceKey, title, bodyHtml, parentId) {
+export async function createPage(parentId, title, bodyHtml) {
   ensureApi();
   const payload = {
     type: 'page',
     title,
-    space: { key: spaceKey },
     body: { storage: { value: bodyHtml, representation: 'storage' } },
+    ancestors: parentId ? [{ id: parentId }] : undefined,
   };
-  if (parentId) {
-    payload.ancestors = [{ id: parentId }];
-  }
   try {
     const { data } = await api.post('/content', payload);
     return data;
@@ -160,6 +241,16 @@ export async function updatePage(id, title, bodyHtml, currentVersion, minorEdit 
     logAxiosError(err);
     throw err;
   }
+}
+
+// ── HTML 转义 ────────────────────────────────────────────────────────────────
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }
 
 // ── Markdown → Confluence Storage Format ───────────────────────────────────────
@@ -222,7 +313,7 @@ export function mdToConfluence(md) {
           break;
         default:
           if (tok.tokens) out += renderTokens(tok.tokens, listDepth);
-          else if (tok.text) out += tok.text;
+          else if (tok.text) out += escapeHtml(tok.text);
       }
     }
     return out;
@@ -234,7 +325,7 @@ export function mdToConfluence(md) {
     for (const tok of toks) {
       switch (tok.type) {
         case 'text':
-          out += tok.tokens ? renderInline(tok.tokens) : tok.text;
+          out += tok.tokens ? renderInline(tok.tokens) : escapeHtml(tok.text);
           break;
         case 'strong':
           out += `<strong>${renderInline(tok.tokens)}</strong>`;
@@ -243,22 +334,27 @@ export function mdToConfluence(md) {
           out += `<em>${renderInline(tok.tokens)}</em>`;
           break;
         case 'codespan':
-          out += `<code>${tok.text}</code>`;
+          out += `<code>${escapeHtml(tok.text)}</code>`;
           break;
         case 'del':
           out += `<s>${renderInline(tok.tokens)}</s>`;
           break;
         case 'link':
-          out += `<a href="${tok.href}">${renderInline(tok.tokens)}</a>`;
+          out += `<a href="${escapeHtml(tok.href)}">${renderInline(tok.tokens)}</a>`;
           break;
         case 'image':
-          out += `<ac:image><ri:attachment ri:filename="${tok.href}" /></ac:image>`;
+          out += `<ac:image><ri:attachment ri:filename="${escapeHtml(tok.href)}" /></ac:image>`;
           break;
         case 'br':
           out += '<br/>';
           break;
         case 'escape':
           out += tok.text;
+          break;
+        case 'html':
+          // marked 识别的 inline HTML（如 <div>foo</div>、<即实际未使用>）
+          // 我们不支持用户写原生 HTML → 一律转义
+          out += escapeHtml(tok.text);
           break;
         default:
           out += tok.text || '';
@@ -449,96 +545,121 @@ export async function listAttachments(pageId) {
 // ── 高级业务流程 ──────────────────────────────────────────────────────────────
 
 /**
- * 查找父页面 ID（支持按 title 或直接 ID）
- */
-async function resolveParentId(parentIdentifier, spaceKey) {
-  if (!parentIdentifier) return null;
-  // 如果是纯数字，当作 ID
-  if (/^\d+$/.test(parentIdentifier)) {
-    const page = await getPageById(parentIdentifier);
-    console.log(`  父页面：${page.title} (ID: ${page.id})`);
-    return page.id;
-  }
-  // 否则按 title 查找
-  const page = await getPageByTitle(spaceKey, parentIdentifier);
-  if (!page) {
-    throw new Error(`未找到父页面「${parentIdentifier}」（space: ${spaceKey}）`);
-  }
-  console.log(`  父页面：${page.title} (ID: ${page.id})`);
-  return page.id;
-}
-
-/**
  * 上传 Markdown 文件到 Confluence
  * @param {object} opts
  * @param {string} opts.filePath - 本地 .md 文件路径
  * @param {string} [opts.title] - 页面标题（默认取文件名）
- * @param {string} [opts.spaceKey] - space key
- * @param {string} [opts.parentId] - 父页面 ID 或标题
+ * @param {string} opts.parentId - 父页面 ID（数字）
  * @param {boolean} [opts.dryRun] - 仅打印转换结果
  */
 export async function uploadMarkdown(opts) {
-  const { filePath, title: optTitle, spaceKey: spaceKeyOpt, parentId: parentRaw, dryRun = false } = opts;
-  const effectiveSpaceKey = spaceKeyOpt || spaceKey;
+  const { filePath, title: optTitle, parentId: parentRaw, dryRun = false, mermaid = true } = opts;
   const fs = await import('node:fs');
   const path = await import('node:path');
 
-  const md = fs.readFileSync(filePath, 'utf-8');
+  let md = fs.readFileSync(filePath, 'utf-8');
   const title = optTitle || path.basename(filePath, extname(filePath));
+
+  // 必须有 parentId
+  if (!parentRaw || !/^\d+$/.test(parentRaw)) {
+    throw new Error('upload 需要 --parent <数字页面ID> 作为父页面');
+  }
+
+  const parentPage = await getPageById(parentRaw);
+  console.log(`  父页面：${parentPage.title} (ID: ${parentPage.id}, Space: ${parentPage.space?.key})`);
+
+  // Mermaid 预处理
+  let mermaidImages = [];
+  if (mermaid) {
+    const result = await preprocessMermaid(md);
+    md = result.md;
+    mermaidImages = result.images;
+  }
+
   const bodyHtml = mdToConfluence(md);
 
   if (dryRun) {
     console.log('── 转换结果（dry-run）────────────────────────');
     console.log(`  标题: ${title}`);
-    console.log(`  Space: ${effectiveSpaceKey}`);
+    console.log(`  父页面: ${parentPage.title} (ID: ${parentPage.id})`);
+    if (mermaidImages.length) console.log(`  Mermaid 图片: ${mermaidImages.length} 张`);
     console.log('  Body:\n' + bodyHtml);
     return null;
   }
 
-  // 查找父页面
-  const parentId = await resolveParentId(parentRaw, effectiveSpaceKey);
+  try {
+    // 检查 parent 下是否已有同名子页面
+    const children = await listChildPages(parentPage.id, 500);
+    const existing = children.find(c => c.title === title);
 
-  // 检查是否已存在同名页面
-  const existing = await getPageByTitle(effectiveSpaceKey, title);
-  if (existing) {
-    console.log(`  页面「${title}」已存在 (ID: ${existing.id})，将更新…`);
-    const updated = await updatePage(existing.id, title, bodyHtml, existing.version.number);
-    console.log(`  ✅ 更新完成 → ${baseUrl}/pages/viewpage.action?pageId=${updated.id}`);
-    return updated;
+    let page;
+    if (existing) {
+      console.log(`  父页面下已存在同名页面「${title}」(ID: ${existing.id})，将更新…`);
+      page = await updatePage(existing.id, title, bodyHtml, existing.version.number);
+    } else {
+      page = await createPage(parentPage.id, title, bodyHtml);
+    }
+
+    // 上传 mermaid 图片作为附件
+    if (mermaidImages.length) {
+      console.log('  📎 上传 Mermaid 图片附件…');
+      for (const img of mermaidImages) {
+        await uploadAttachment(page.id, img.file, img.name);
+        console.log(`    ✅ ${img.name}`);
+      }
+    }
+
+    console.log(`  ✅ ${existing ? '更新' : '创建'}完成 → ${baseUrl}/pages/viewpage.action?pageId=${page.id}`);
+    return page;
+  } finally {
+    await cleanupMermaidImages(mermaidImages);
   }
-
-  const page = await createPage(effectiveSpaceKey, title, bodyHtml, parentId);
-  console.log(`  ✅ 创建完成 → ${baseUrl}/pages/viewpage.action?pageId=${page.id}`);
-  return page;
 }
 
 /**
- * 更新指定页面（通过 ID 或 space+title 查找）
+ * 更新指定页面（通过 page-id 定位）
  */
 export async function updateMarkdown(opts) {
-  const { pageId, title: searchTitle, filePath, spaceKey: spaceKeyOpt, minorEdit = false } = opts;
-  const effectiveSpaceKey = spaceKeyOpt || spaceKey;
+  const { pageId, filePath, minorEdit = false, mermaid = true } = opts;
   const fs = await import('node:fs');
 
-  const md = fs.readFileSync(filePath, 'utf-8');
-  const bodyHtml = mdToConfluence(md);
-
-  let page;
-  if (pageId) {
-    page = await getPageById(pageId);
-  } else if (searchTitle) {
-    page = await getPageByTitle(effectiveSpaceKey, searchTitle);
-    if (!page) throw new Error(`未找到页面「${searchTitle}」（space: ${effectiveSpaceKey}）`);
-  } else {
-    throw new Error('必须指定 --page-id 或 --title 来定位目标页面');
+  if (!pageId || !/^\d+$/.test(pageId)) {
+    throw new Error('update 需要 --page-id <数字页面ID>');
   }
 
-  console.log(`  目标页面：${page.title} (ID: ${page.id}, 当前版本: ${page.version.number})`);
-  const updated = await updatePage(page.id, page.title, bodyHtml, page.version.number, minorEdit);
-  console.log(`  ✅ 更新完成 → ${baseUrl}/pages/viewpage.action?pageId=${updated.id}`);
-  return updated;
+  let md = fs.readFileSync(filePath, 'utf-8');
+
+  // Mermaid 预处理
+  let mermaidImages = [];
+  if (mermaid) {
+    const result = await preprocessMermaid(md);
+    md = result.md;
+    mermaidImages = result.images;
+  }
+
+  const bodyHtml = mdToConfluence(md);
+
+  const page = await getPageById(pageId);
+
+  try {
+    console.log(`  目标页面：${page.title} (ID: ${page.id}, Space: ${page.space?.key}, 当前版本: ${page.version.number})`);
+    const updated = await updatePage(page.id, page.title, bodyHtml, page.version.number, minorEdit);
+
+    // 上传 mermaid 图片作为附件
+    if (mermaidImages.length) {
+      console.log('  📎 上传 Mermaid 图片附件…');
+      for (const img of mermaidImages) {
+        await uploadAttachment(page.id, img.file, img.name);
+        console.log(`    ✅ ${img.name}`);
+      }
+    }
+
+    console.log(`  ✅ 更新完成 → ${baseUrl}/pages/viewpage.action?pageId=${updated.id}`);
+    return updated;
+  } finally {
+    await cleanupMermaidImages(mermaidImages);
+  }
 }
 
 // ── 导出配置 ──────────────────────────────────────────────────────────────────
 export function getBaseUrl() { return baseUrl; }
-export function getSpaceKey() { return spaceKey; }

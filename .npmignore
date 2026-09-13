@@ -1,0 +1,6 @@
+.npmrc
+node_modules
+.DS_Store
+default.profraw
+**/default.profraw
+**/*.profraw
