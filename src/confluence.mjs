@@ -201,13 +201,14 @@ export async function getPageContent(id) {
 // ── 页面创建 / 更新 ───────────────────────────────────────────────────────────
 
 /**
- * 创建新页面（有 parentId 即可，Confluence 自动推断 space）
+ * 创建新页面（spaceKey 从父页面推断后显式传入，兼容各版本 Confluence）
  */
-export async function createPage(parentId, title, bodyHtml) {
+export async function createPage(parentId, spaceKey, title, bodyHtml) {
   ensureApi();
   const payload = {
     type: 'page',
     title,
+    space: { key: spaceKey },
     body: { storage: { value: bodyHtml, representation: 'storage' } },
     ancestors: parentId ? [{ id: parentId }] : undefined,
   };
@@ -568,6 +569,10 @@ export async function uploadMarkdown(opts) {
   const parentPage = await getPageById(parentRaw);
   console.log(`  父页面：${parentPage.title} (ID: ${parentPage.id}, Space: ${parentPage.space?.key})`);
 
+  if (!parentPage.space?.key) {
+    throw new Error(`无法从父页面 ${parentRaw} 推断 Space Key，请确认该页面 ID 存在且有权限访问`);
+  }
+
   // Mermaid 预处理
   let mermaidImages = [];
   if (mermaid) {
@@ -597,7 +602,7 @@ export async function uploadMarkdown(opts) {
       console.log(`  父页面下已存在同名页面「${title}」(ID: ${existing.id})，将更新…`);
       page = await updatePage(existing.id, title, bodyHtml, existing.version.number);
     } else {
-      page = await createPage(parentPage.id, title, bodyHtml);
+      page = await createPage(parentPage.id, parentPage.space?.key, title, bodyHtml);
     }
 
     // 上传 mermaid 图片作为附件
