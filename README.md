@@ -90,13 +90,32 @@ Markdown 中的 `mermaid` 代码块会自动通过 [sebastianjs](https://github.
 - Mermaid 渲染失败时保留原始代码块（降级处理，不阻塞上传）
 - 使用 `--no-mermaid-to-img` 可禁用自动渲染
 
+### 图片显示宽度
+
+默认按图片原始尺寸显示，可通过两种方式指定在 Confluence 中的显示宽度（像素，高度等比缩放）：
+
+- **单张图表**：在代码块围栏上写 `width=<像素>`，优先级最高
+- **全局默认**：CLI 加 `--mermaid-width <像素>`，对所有未单独指定宽度的图表生效
+
+````markdown
+```mermaid width=600
+graph LR
+  A --> B
+```
+````
+
 ```bash
-# 自动处理 mermaid（默认开启）
+# 自动处理 mermaid（默认开启，原始尺寸显示）
 confluence-sync upload --file README.md --parent 27263539
+
+# 全局指定 Mermaid 图片显示宽度为 500px
+confluence-sync upload --file README.md --parent 27263539 --mermaid-width 500
 
 # 禁用 mermaid 渲染
 confluence-sync upload --file README.md --parent 27263539 --no-mermaid-to-img
 ```
+
+> 宽度只影响 Confluence 页面中的显示大小，上传的 PNG 附件仍为高分辨率原图，点击可查看清晰大图。
 
 ## 配置参数
 
@@ -114,6 +133,7 @@ confluence-sync upload --file README.md --parent 27263539 --no-mermaid-to-img
 | `--minor-edit` | 标记为小修改（不通知关注者） |
 | `--markdown` | get-content 时输出为 Markdown 格式 |
 | `--no-mermaid-to-img` | 禁用 Mermaid 图表自动渲染 |
+| `--mermaid-width` | Mermaid 图片在 Confluence 的显示宽度（像素，默认原始尺寸；代码块围栏上的 `width=` 优先级更高） |
 
 ## 示例
 

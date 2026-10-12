@@ -9,8 +9,8 @@
  *     方式2 Auth： CONFLUENCE_USERNAME + CONFLUENCE_API_TOKEN
  *
  * 用法：
- *   confluence-sync upload      --file <path> --parent <页面ID> [--title <标题>] [--dry-run] [--no-mermaid-to-img]
- *   confluence-sync update      --file <path> --page-id <ID> [--minor-edit] [--no-mermaid-to-img]
+ *   confluence-sync upload      --file <path> --parent <页面ID> [--title <标题>] [--dry-run] [--no-mermaid-to-img] [--mermaid-width <像素>]
+ *   confluence-sync update      --file <path> --page-id <ID> [--minor-edit] [--no-mermaid-to-img] [--mermaid-width <像素>]
  *   confluence-sync upload-file --page-id <ID> --file <path> [--name <文件名>]
  *   confluence-sync list-pages  --parent <页面ID>
  *   confluence-sync list-files  --page-id <ID>
@@ -80,12 +80,14 @@ upload 选项:
   --title       页面标题（默认取文件名）
   --dry-run     仅打印转换结果，不实际上传
   --no-mermaid-to-img  禁用 Mermaid 图表自动渲染
+  --mermaid-width      Mermaid 图片在 Confluence 的显示宽度（像素，默认原始尺寸）
 
 update 选项:
   --file        本地 .md 文件路径（必填）
   --page-id     目标页面 ID（数字，必填）
   --minor-edit  标记为小修改（不通知关注者）
   --no-mermaid-to-img  禁用 Mermaid 图表自动渲染
+  --mermaid-width      Mermaid 图片在 Confluence 的显示宽度（像素，默认原始尺寸）
 
 upload-file 选项:
   --page-id     目标页面 ID（必填）
@@ -150,6 +152,7 @@ async function main() {
           parentId: args.parent,
           dryRun: args['dry-run'] === true,
           mermaid: args['no-mermaid-to-img'] !== true,
+          mermaidWidth: args['mermaid-width'],
         });
         if (result) {
           console.log('\n页面信息：');
@@ -175,6 +178,7 @@ async function main() {
           filePath: args.file,
           minorEdit: args['minor-edit'] === true,
           mermaid: args['no-mermaid-to-img'] !== true,
+          mermaidWidth: args['mermaid-width'],
         });
         console.log('\n页面信息：');
         console.log(`  ID:      ${result.id}`);

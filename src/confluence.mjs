@@ -50,14 +50,36 @@ async function getCjkFontRegistry() {
 }
 
 /**
+ * 解析图片显示宽度（正整数像素）
+ * @param {string|number|undefined} raw - 原始宽度值
+ * @param {string} source - 配置来源描述，用于错误提示
+ * @returns {number|undefined} 宽度像素；未配置时返回 undefined（即原始尺寸）
+ */
+function parseImageWidth(raw, source) {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  if (raw === true) {
+    throw new Error(`${source} 需要指定正整数像素值，例如 --mermaid-width 600`);
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`${source} 的宽度必须是正整数像素，收到：${raw}`);
+  }
+  return n;
+}
+
+/**
  * 检测并替换 markdown 中的 ```mermaid 代码块为图片占位符
  * 使用 sebastianjs（本地、零浏览器、零外网依赖）渲染为 PNG
  *
+ * 宽度控制：围栏 info string 中写 width=<像素> 可单独指定（如 ```mermaid width=600），
+ * 未指定时使用 defaultWidth，两者都没有则为原始尺寸
+ *
  * @param {string} md - 原始 markdown
+ * @param {number} [defaultWidth] - 全局默认显示宽度（像素）
  * @returns {{ md: string, images: { file: string, name: string }[], hasMermaid: boolean }}
  */
-export async function preprocessMermaid(md) {
-  const mermaidRe = /```mermaid\s*\n([\s\S]*?)```/gi;
+export async function preprocessMermaid(md, defaultWidth) {
+  const mermaidRe = /```mermaid([^\n]*)\n([\s\S]*?)```/gi;
   const matches = [...md.matchAll(mermaidRe)];
   if (!matches.length) return { md, images: [], hasMermaid: false };
 
@@ -69,7 +91,15 @@ export async function preprocessMermaid(md) {
 
   for (let i = 0; i < matches.length; i++) {
     const block = matches[i];
-    const code = block[1];
+    const info = block[1] || '';
+    const code = block[2];
+
+    // block 级 width 优先于全局默认宽度
+    const widthRaw = info.match(/\bwidth\s*=\s*(\S+)/i)?.[1];
+    const width = widthRaw !== undefined
+      ? parseImageWidth(widthRaw, `Mermaid 图表 ${i + 1} 的 width 参数`)
+      : defaultWidth;
+
     const id = nanoid();
     const name = `mermaid-${id}.png`;
     const file = `${tmpdir()}/${name}`;
@@ -87,12 +117,15 @@ export async function preprocessMermaid(md) {
       await writeFile(file, pngBuffer);
       images.push({ file, name });
 
-      const replacement = `![${name}](${name})`;
+      // 宽度通过 markdown 图片 title 透传给 mdToConfluence
+      const titlePart = width ? ` "confluence-width=${width}"` : '';
+      const replacement = `![${name}](${name}${titlePart})`;
       const start = block.index + offset;
       const end = start + block[0].length;
       result = result.slice(0, start) + replacement + result.slice(end);
       offset += replacement.length - block[0].length;
-      console.log(`  📐 Mermaid 图表 ${i + 1} 渲染完成 → ${name} (${pngBuffer.length}B, ${t1 - t0}ms)`);
+      const widthDesc = width ? `, 显示宽度 ${width}px` : '';
+      console.log(`  📐 Mermaid 图表 ${i + 1} 渲染完成 → ${name} (${pngBuffer.length}B${widthDesc}, ${t1 - t0}ms)`);
     } catch (err) {
       console.warn(`  ⚠️  Mermaid 图表 ${i + 1} 渲染失败：${err.message}，保留原始代码块`);
     }
@@ -343,9 +376,13 @@ export function mdToConfluence(md) {
         case 'link':
           out += `<a href="${escapeHtml(tok.href)}">${renderInline(tok.tokens)}</a>`;
           break;
-        case 'image':
-          out += `<ac:image><ri:attachment ri:filename="${escapeHtml(tok.href)}" /></ac:image>`;
+        case 'image': {
+          // mermaid 预处理通过 title "confluence-width=N" 透传显示宽度
+          const imgWidth = tok.title?.match(/^confluence-width=(\d+)$/)?.[1];
+          const widthAttr = imgWidth ? ` ac:width="${imgWidth}"` : '';
+          out += `<ac:image${widthAttr}><ri:attachment ri:filename="${escapeHtml(tok.href)}" /></ac:image>`;
           break;
+        }
         case 'br':
           out += '<br/>';
           break;
@@ -403,8 +440,14 @@ export function confluenceToMd(html) {
   // 链接
   md = md.replace(/<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)');
 
-  // 图片：<ac:image><ri:attachment ri:filename="xxx" /></ac:image>
-  md = md.replace(/<ac:image>[\s\S]*?<ri:attachment\s+ri:filename="([^"]*)"[\s\S]*?\/>[\s\S]*?<\/ac:image>/gi, '![]($1)');
+  // 图片：<ac:image [ac:width="600"]><ri:attachment ri:filename="xxx" /></ac:image>
+  md = md.replace(/<ac:image([^>]*)>[\s\S]*?<ri:attachment\s+ri:filename="([^"]*)"[\s\S]*?\/>[\s\S]*?<\/ac:image>/gi,
+    (_, attrs, filename) => {
+      const imgWidth = attrs.match(/ac:width="(\d+)"/)?.[1];
+      return imgWidth
+        ? `![](${filename} "confluence-width=${imgWidth}")`
+        : `![](${filename})`;
+    });
 
   // 普通图片
   md = md.replace(/<img\s+[^>]*src="([^"]*)"[^>]*\/?>/gi, '![]($1)');
@@ -552,9 +595,11 @@ export async function listAttachments(pageId) {
  * @param {string} [opts.title] - 页面标题（默认取文件名）
  * @param {string} opts.parentId - 父页面 ID（数字）
  * @param {boolean} [opts.dryRun] - 仅打印转换结果
+ * @param {number|string} [opts.mermaidWidth] - Mermaid 图片在 Confluence 的默认显示宽度（像素）
  */
 export async function uploadMarkdown(opts) {
-  const { filePath, title: optTitle, parentId: parentRaw, dryRun = false, mermaid = true } = opts;
+  const { filePath, title: optTitle, parentId: parentRaw, dryRun = false, mermaid = true, mermaidWidth } = opts;
+  const defaultWidth = parseImageWidth(mermaidWidth, '--mermaid-width');
   const fs = await import('node:fs');
   const path = await import('node:path');
 
@@ -576,7 +621,7 @@ export async function uploadMarkdown(opts) {
   // Mermaid 预处理
   let mermaidImages = [];
   if (mermaid) {
-    const result = await preprocessMermaid(md);
+    const result = await preprocessMermaid(md, defaultWidth);
     md = result.md;
     mermaidImages = result.images;
   }
@@ -625,7 +670,8 @@ export async function uploadMarkdown(opts) {
  * 更新指定页面（通过 page-id 定位）
  */
 export async function updateMarkdown(opts) {
-  const { pageId, filePath, minorEdit = false, mermaid = true } = opts;
+  const { pageId, filePath, minorEdit = false, mermaid = true, mermaidWidth } = opts;
+  const defaultWidth = parseImageWidth(mermaidWidth, '--mermaid-width');
   const fs = await import('node:fs');
 
   if (!pageId || !/^\d+$/.test(pageId)) {
@@ -637,7 +683,7 @@ export async function updateMarkdown(opts) {
   // Mermaid 预处理
   let mermaidImages = [];
   if (mermaid) {
-    const result = await preprocessMermaid(md);
+    const result = await preprocessMermaid(md, defaultWidth);
     md = result.md;
     mermaidImages = result.images;
   }

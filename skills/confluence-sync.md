@@ -31,13 +31,13 @@ Confluence 文档同步 CLI 工具，支持将本地 Markdown 文件上传至 Co
 ### upload - 上传 Markdown 为新页面（已存在同名页面则自动更新）
 
 ```bash
-confluence-sync upload --file <path> --parent <页面ID> [--title <标题>] [--dry-run] [--no-mermaid-to-img]
+confluence-sync upload --file <path> --parent <页面ID> [--title <标题>] [--dry-run] [--no-mermaid-to-img] [--mermaid-width <像素>]
 ```
 
 ### update - 更新已有页面
 
 ```bash
-confluence-sync update --file <path> --page-id <ID> [--minor-edit] [--no-mermaid-to-img]
+confluence-sync update --file <path> --page-id <ID> [--minor-edit] [--no-mermaid-to-img] [--mermaid-width <像素>]
 ```
 
 ### upload-file - 上传附件
@@ -69,6 +69,27 @@ confluence-sync get-content --page-id <ID> [--markdown]
 ## Mermaid 支持
 
 Markdown 中的 ```` ```mermaid ```` 代码块自动通过 sebastianjs 渲染为 PNG 图片（本地离线渲染，无需外网、无需浏览器），作为附件上传。默认开启，使用 `--no-mermaid-to-img` 可禁用。渲染失败时保留原始代码块，不阻塞上传。
+
+### 图片显示宽度
+
+默认按图片原始尺寸在 Confluence 中显示，可指定显示宽度（像素，高度等比缩放）：
+
+- **单张图表**：在代码块围栏上写 `width=<像素>`，优先级最高
+
+````markdown
+```mermaid width=600
+graph LR
+  A --> B
+```
+````
+
+- **全局默认**：`--mermaid-width <像素>`，对所有未单独指定宽度的图表生效
+
+```bash
+confluence-sync upload --file README.md --parent 27263539 --mermaid-width 500
+```
+
+宽度只影响页面显示大小，上传的 PNG 附件仍为高分辨率原图。
 
 ## 使用示例
 
